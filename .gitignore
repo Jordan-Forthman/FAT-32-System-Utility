@@ -1,0 +1,7 @@
+# Executables and Object Files
+*.o
+a.out
+
+# Disk Image
+*.img
+fat32.img

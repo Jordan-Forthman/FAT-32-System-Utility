@@ -1,6 +1,6 @@
 # FAT32 File System Utility
 
-[A user-space shell utility that mounts and manipulates FAT32 disk images without corrupting them. Supports navigation, file/directory creation, reading, writing, moving, and deletion while maintaining full FAT32 structure integrity]
+A user-space shell utility that mounts and manipulates FAT32 disk images without corrupting them. Supports navigation, file/directory creation, reading, writing, moving, and deletion while maintaining full FAT32 structure integrity
 
 ## Author
 - **Jordan Forthman**: jf24b@fsu.edu

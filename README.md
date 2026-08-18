@@ -126,16 +126,3 @@ include/          headers
 tests/            end-to-end test suite
 fat32.img.gz      sample volume, unpacked by `make image`
 ```
-
-## Notes
-
-Built for COP4610 (Operating Systems).
-
-Since the coursework version, several correctness problems have been fixed: end
-of input now exits instead of looping forever, a file's first cluster is
-recorded in its directory entry so written data survives a reopen, names are
-stored in valid 8.3 form, FAT updates are mirrored to both copies, `rmdir`
-refuses a non-empty directory instead of orphaning its contents, reads spanning
-a cluster boundary return the correct bytes, and the prompt reflects the actual
-image and directory. `cp` is implemented rather than stubbed, and the build is
-warning clean under `-Wall -Wextra`.

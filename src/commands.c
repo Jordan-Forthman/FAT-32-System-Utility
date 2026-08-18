@@ -51,13 +51,11 @@ void cmd_ls() {
             if (entry.DIR_Name[0] == 0x00) break;  // End of dir entries
             if (entry.DIR_Name[0] == 0xE5) continue;  // Deleted
             if (entry.DIR_Attr == ATTR_LONG_NAME) continue;  // Ignore LNDE
+            if (entry.DIR_Attr & ATTR_VOLUME_ID) continue;   // Volume label
 
-            // Valid short-name: Copy, null-terminate, trim spaces
-            char name[12];
-            memcpy(name, entry.DIR_Name, 11);
-            name[11] = '\0';
-            trim_trailing_spaces(name, 11);
-
+            // Render the 8.3 bytes back into a readable "NAME.EXT"
+            char name[13];
+            from_83_name(entry.DIR_Name, name);
             printf("%s\n", name);
         }
 
@@ -116,15 +114,23 @@ void cmd_cd(tokenlist* tokens) {
     // Update globals
     g_cwd_cluster = new_cluster;
 
-    // Update prompt
-    char new_prompt[256];
-    snprintf(new_prompt, sizeof(new_prompt), "%s%s/", g_prompt, dirname);
-    strncpy(g_prompt, new_prompt, sizeof(g_prompt));
-
-    // Handle root reset
-    if (new_cluster == g_bpb.BPB_RootClus) {
-        snprintf(g_prompt, sizeof(g_prompt), "fat32.img/>");  // Reset to root
+    // Track the path so the prompt stays accurate
+    if (strcmp(dirname, "..") == 0) {
+        // drop the trailing "NAME/" component
+        size_t len = strlen(g_cwd_path);
+        if (len > 0) {
+            g_cwd_path[len - 1] = '\0';                 // strip trailing '/'
+            char* slash = strrchr(g_cwd_path, '/');
+            if (slash) slash[1] = '\0';
+            else g_cwd_path[0] = '\0';
+        }
+    } else {
+        size_t len = strlen(g_cwd_path);
+        snprintf(g_cwd_path + len, sizeof(g_cwd_path) - len, "%s/", dirname);
     }
+
+    if (new_cluster == g_bpb.BPB_RootClus) g_cwd_path[0] = '\0';
+    rebuild_prompt();
 }
 
 void cmd_mkdir(tokenlist* tokens) {
@@ -231,11 +237,12 @@ void cmd_open(tokenlist* tokens) {
     }
 
     // Fill slot
+    memset(&g_open_table[slot], 0, sizeof(OpenFile_t));
     g_open_table[slot].fd = slot + 1;
-    strncpy(g_open_table[slot].name, filename, 11);
+    strncpy(g_open_table[slot].name, filename, sizeof(g_open_table[slot].name) - 1);
     g_open_table[slot].mode = mode;
     g_open_table[slot].offset = 0;
-    strncpy(g_open_table[slot].path, g_prompt, 255);
+    strncpy(g_open_table[slot].path, g_prompt, sizeof(g_open_table[slot].path) - 1);
     g_open_table[slot].first_clus = (entry->DIR_FstClusHI << 16) | entry->DIR_FstClusLO;
     g_open_table[slot].size = entry->DIR_FileSize;
     g_open_table[slot].dir_clus = g_cwd_cluster;
@@ -254,8 +261,10 @@ void cmd_close(tokenlist* tokens) {
         return;
     }
 
-    // Reset slot
-    if (strstr(g_open_table[fd].path, g_prompt) == NULL) {
+    // A file may only be closed from the directory it was opened in. Compare
+    // the recorded cluster rather than prompt strings, which mismatched
+    // whenever the prompt changed or was truncated.
+    if (g_open_table[fd].dir_clus != g_cwd_cluster) {
         printf("Error: fd %d not in cwd\n", fd);
         return;
     }
@@ -359,11 +368,18 @@ void cmd_write(tokenlist* tokens) {
     }
     const char* filename = tokens->items[1];
     
-    //  Reconstruct string data from tokens
+    //  Reconstruct string data from tokens, bounded: strcat into a fixed
+    //  buffer would overflow the stack on a long enough write command.
     char buffer[1024] = "";
-    for (int i = 2; i < tokens->size; i++) {
-        strcat(buffer, tokens->items[i]);
-        if (i < tokens->size - 1) strcat(buffer, " ");
+    size_t used = 0;
+    for (size_t i = 2; i < tokens->size; i++) {
+        int n = snprintf(buffer + used, sizeof(buffer) - used, "%s%s",
+                         tokens->items[i], (i < tokens->size - 1) ? " " : "");
+        if (n < 0 || (size_t)n >= sizeof(buffer) - used) {
+            printf("Error: data too long (max %zu bytes)\n", sizeof(buffer) - 1);
+            return;
+        }
+        used += (size_t)n;
     }
 
     // Strip quotes if present
@@ -435,7 +451,6 @@ void cmd_rm(tokenlist* tokens) {
     }
 
     // Mark entry as deleted
-    long offset = -1;
     delete_entry_by_name(g_cwd_cluster, filename);
 
     free(entry);
@@ -465,22 +480,100 @@ void cmd_rmdir(tokenlist* tokens) {
         return;
     }
 
-    // Check if empty
+    // Only empty directories may be removed. Without this check the contents
+    // are orphaned: their clusters are freed while their entries remain.
     uint32_t first_clus = (entry->DIR_FstClusHI << 16) | entry->DIR_FstClusLO;
+    if (first_clus >= 2 && !dir_is_empty(first_clus)) {
+        printf("Error: Directory '%s' is not empty\n", dirname);
+        free(entry);
+        return;
+    }
+
     clear_fat_chain(first_clus);
     delete_entry_by_name(g_cwd_cluster, dirname);
-    
+
     free(entry);
     printf("Directory '%s' removed\n", dirname);
 }
 
+// Copy a file within the current directory.
 void cmd_cp(tokenlist* tokens) {
     if (tokens->size != 3) {
         printf("Error: cp requires source and dest\n");
         return;
     }
-    // Implementation
-    printf("cp command not fully implemented in this snippet (Use read/write logic)\n");
+    const char* src = tokens->items[1];
+    const char* dest = tokens->items[2];
+
+    DirEntry_t* s = find_entry(src, g_cwd_cluster);
+    if (!s) {
+        printf("Error: File '%s' not found\n", src);
+        return;
+    }
+    if (s->DIR_Attr & ATTR_DIRECTORY) {
+        printf("Error: '%s' is a directory\n", src);
+        free(s);
+        return;
+    }
+
+    DirEntry_t* existing = find_entry(dest, g_cwd_cluster);
+    if (existing) {
+        printf("Error: '%s' already exists\n", dest);
+        free(existing);
+        free(s);
+        return;
+    }
+
+    long slot = find_free_entry_slot(g_cwd_cluster);
+    if (slot == -1) {
+        printf("Error: No space in directory\n");
+        free(s);
+        return;
+    }
+
+    uint32_t src_clus = (s->DIR_FstClusHI << 16) | s->DIR_FstClusLO;
+    uint32_t size = s->DIR_FileSize;
+    free(s);
+
+    // Create the destination entry; clusters are attached as data is written.
+    DirEntry_t entry;
+    init_dir_entry(&entry, dest, ATTR_ARCHIVE, 0, 0);
+    write_entry(slot, &entry);
+
+    if (size == 0 || src_clus < 2) {
+        printf("Copied '%s' to '%s' (0 bytes)\n", src, dest);
+        return;
+    }
+
+    uint32_t out_len = 0;
+    char* data = read_file_data(src_clus, 0, size, size, &out_len);
+    if (!data) {
+        printf("Error: Failed to read '%s'\n", src);
+        return;
+    }
+
+    // Borrow an open-file slot so the normal write path handles allocation.
+    int fd = find_free_fd();
+    if (fd == -1) {
+        printf("Error: Max open files reached\n");
+        free(data);
+        return;
+    }
+
+    memset(&g_open_table[fd], 0, sizeof(OpenFile_t));
+    g_open_table[fd].fd = fd + 1;
+    strncpy(g_open_table[fd].name, dest, sizeof(g_open_table[fd].name) - 1);
+    g_open_table[fd].mode = MODE_WRITE;
+    g_open_table[fd].dir_clus = g_cwd_cluster;
+
+    int written = write_file_data(fd, data, out_len);
+    memset(&g_open_table[fd], 0, sizeof(OpenFile_t));   // release the slot
+    free(data);
+
+    if (written < 0)
+        printf("Error: Failed to write '%s'\n", dest);
+    else
+        printf("Copied '%s' to '%s' (%d bytes)\n", src, dest, written);
 }
 
 void cmd_mv(tokenlist* tokens) {

@@ -85,16 +85,29 @@ extern int g_next_fd;  // Next free (linear search)
 extern FILE* g_fp;          // Image file pointer
 extern BPB_t g_bpb;         // Parsed BPB
 extern uint32_t g_cwd_cluster;  // Current working dir cluster
-extern char g_prompt[256]; 
+extern char g_prompt[512];
+extern char g_image_name[128];  // Base name of the mounted image
+extern char g_cwd_path[256];    // Path below root, e.g. "DOCS/" ("" at root)
+void rebuild_prompt(void);
 
 // Helpers (utils.c)
 uint32_t get_first_data_sector();
 uint32_t get_cluster_byte_offset(uint32_t cluster);
 uint32_t get_fat_entry_offset(uint32_t cluster);
+uint32_t get_fat_copy_offset(uint32_t cluster, uint32_t fat_index);
 uint32_t get_next_cluster(uint32_t current);
 uint32_t find_free_cluster();
 void wrapper_fp(void (*func)(), long* saved_pos);
 void trim_trailing_spaces(char* name, int len);
+
+// 8.3 short-name conversion. On disk a name is 11 raw bytes: 8 of name and 3
+// of extension, space padded, upper case, with no dot stored between them.
+void to_83_name(const char* input, char out[11]);
+void from_83_name(const uint8_t raw[11], char* out);   // out needs 13 bytes
+int name_matches(const uint8_t raw[11], const char* name);
+
+int dir_is_empty(uint32_t dir_clus);
+void update_dir_entry_cluster(uint32_t dir_clus, const char* name, uint32_t first_clus);
 DirEntry_t* find_entry(const char* name, uint32_t start_cluster);
 long find_free_entry_slot(uint32_t start_cluster);
 void write_entry(long offset, DirEntry_t* entry);

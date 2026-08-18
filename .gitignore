@@ -1,7 +1,16 @@
-# Executables and Object Files
+# Build output
+obj/
+bin/
 *.o
 a.out
 
-# Disk Image
+# The working disk image is unpacked from fat32.img.gz by `make image`.
+# The compressed seed is tracked; the expanded 34 MB volume is not.
 *.img
-fat32.img
+!*.img.gz
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

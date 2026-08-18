@@ -3,7 +3,14 @@
 FILE* g_fp = NULL;
 BPB_t g_bpb;
 uint32_t g_cwd_cluster;
-char g_prompt[256];
+char g_prompt[512];
+char g_image_name[128];
+char g_cwd_path[256];
+
+// Prompt is "<image>/<path>>", e.g. "fat32.img/>" or "fat32.img/DOCS/>".
+void rebuild_prompt(void) {
+    snprintf(g_prompt, sizeof(g_prompt), "%s/%s>", g_image_name, g_cwd_path);
+}
 OpenFile_t g_open_table[MAX_OPEN_FILES] = {0};
 int g_next_fd = 0;  // Unused
 
@@ -67,26 +74,42 @@ int main(int argc, char** argv) {
     }
 
     // Parse BPB (first 512 bytes)
-    fread(&g_bpb, sizeof(BPB_t), 1, g_fp);
+    if (fread(&g_bpb, sizeof(BPB_t), 1, g_fp) != 1) {
+        fprintf(stderr, "%s is too small to be a FAT32 image\n", argv[1]);
+        fclose(g_fp);
+        return 1;
+    }
     if (g_bpb.BPB_BytsPerSec != SECTOR_SIZE_DEFAULT) {
         fprintf(stderr, "Invalid FAT32 image\n");
         fclose(g_fp);
         return 1;
     }
 
-    // Initialize state
+    // Initialize state. The prompt shows the image's base name plus the path
+    // walked so far, so it stays correct for any image and any directory.
     g_cwd_cluster = g_bpb.BPB_RootClus;
-    snprintf(g_prompt, sizeof(g_prompt), "%s/>", argv[1]);
+    const char* base = strrchr(argv[1], '/');
+    snprintf(g_image_name, sizeof(g_image_name), "%s", base ? base + 1 : argv[1]);
+    g_cwd_path[0] = '\0';
+    rebuild_prompt();
 
     // Shell loop
     while (1) {
         printf("%s", g_prompt);
+        fflush(stdout);
+
         char* input = get_input();
+        if (!input) {   // end of input: Ctrl-D, or a piped script running out
+            printf("\n");
+            break;
+        }
+
         tokenlist* tokens = get_tokens(input);
         dispatch_command(tokens);
         free(input);
         free_tokens(tokens);
     }
 
+    fclose(g_fp);
     return 0;
 }
